@@ -79,6 +79,28 @@ class ResidualBlock(nn.Module):
         return out + residual
         
 class DNN(nn.Module):
+    """
+    Derivative Neural Network for discovering physical systems.
+    
+    This network is designed to learn the underlying structure of physical systems
+    from data. It includes specialized components for computing derivatives and
+    matrix operations that help capture physical relationships.
+    
+    Args:
+        d (int, optional): Dimension of input space. Defaults to 2.
+        w (int, optional): Width of hidden layers. Defaults to 200.
+        ts (int, optional): Number of theory/physical systems. Defaults to 1.
+    
+    Attributes:
+        d (int): Dimension of input space
+        ts (int): Number of theory/physical systems
+        mlp{i} (nn.Sequential): MLP network for each system
+        b{i} (nn.Parameter): Regularization parameter for each system
+        a{i} (nn.Parameter): Scale parameter for each system
+        lf (nn.Linear): Final linear layer for output
+        vectors (torch.Tensor): Intermediate vectors for computation
+        mats (torch.Tensor): Intermediate matrices for computation
+    """
     def __init__(self, d = 2, w = 200, ts=1):
         super(DNN, self).__init__()
         self.d = d
@@ -97,10 +119,6 @@ class DNN(nn.Module):
             nn.GELU(),
             nn.Linear(w, w),
             nn.GELU(),
-            # nn.Linear(w, w),
-            # nn.GELU(),
-            # nn.Linear(w, w),
-            # nn.GELU(),
             nn.Linear(w, 1),
             ))
             
@@ -134,62 +152,10 @@ class DNN(nn.Module):
         else:
             cross = torch.zeros_like(x[:, 0])
         x = torch.cat([x, square, cross], axis=1)
-        # init = torch.cat([square, cross], axis=1)
-        # init = a * torch.sum(init, axis=1, keepdim=True)
-        
-        # x = x.unsqueeze(1)
         
         self.S = mlp(x) 
         return self.S 
 
-# class DNN(nn.Module):
-#     def __init__(self, d=2, w=200, ts=1):
-#         super(DNN, self).__init__()
-#         self.d = d
-#         self.ts = ts  # number of theories
-
-#         for i in range(self.ts):
-#             setattr(self, f'mlp{i}', nn.Sequential(
-#                 nn.Conv1d(in_channels=5 * d, out_channels=w, kernel_size=3),
-#                 nn.GELU(),
-#                 nn.Conv1d(in_channels=w, out_channels=w, kernel_size=3),
-#                 nn.GELU(),
-#                 nn.Conv1d(in_channels=w, out_channels=1, kernel_size=3)
-#             ))
-
-#             # Initialize b with values from a normal distribution
-#             b_val = torch.randn([], dtype=torch.float32) * 0.1
-#             a_val = torch.randn([], dtype=torch.float32) * 0.1
-#             setattr(self, f'b{i}', nn.Parameter(b_val))
-#             setattr(self, f'a{i}', nn.Parameter(a_val))
-
-#         self.lf = nn.Linear(172, 2, bias=False)  # final linear layer
-
-#         # for storing some intermediate computation
-#         self.vectors = None
-#         self.mats = None
-
-#     def forward(self, x, t, vmapped=False, learn_square=True, learn_cross=True):
-#         # x is of input shape (n, 2*d)
-#         mlp = getattr(self, f'mlp{t}')
-#         a = getattr(self, f'a{t}')
-#         if vmapped:
-#             x = x.unsqueeze(0)
-
-#         if learn_square:
-#             square = x**2
-#         else:
-#             square = torch.zeros_like(x)
-#         if learn_cross:
-#             cross = x[:, self.d:] * x[:, :self.d]
-#         else:
-#             cross = torch.zeros_like(x[:, 0])
-#         x = torch.cat([x, square, cross], axis=1)
-
-#         # Adjust dimensions for Conv1d (batch_size, channels, sequence_length)
-#         x = x.unsqueeze(-1)  # Adding a dummy dimension for sequence_length
-#         self.S = mlp(x).squeeze(-1)  # Remove the dummy dimension after Conv1d
-#         return self.S
     
     def predict_vectors(self, x, t):
         # Compute the forward pass once
@@ -226,12 +192,6 @@ class DNN(nn.Module):
         vectors = torch.cat([vectors, vectors2, vectors3], dim=1) #100x172
         vectors[:, dim1_utils.repeats] *= 0
         vectors[:, :2] *= 0
-        # mask = torch.zeros_like(vectors)
-        # mask[:, 22] = 1
-        # mask[:, 133] = 1
-        # mask[:, 23] = 1
-        # mask[:, 24] = 1
-        # vectors = vectors * mask
         return vectors
 
     def predict(self, x, t, train=True, threshold=10.):

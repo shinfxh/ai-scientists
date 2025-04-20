@@ -1,8 +1,27 @@
+"""
+Physics systems module for generating training data based on various physical systems.
+
+This module provides a collection of functions that generate synthetic data from various
+physical systems, including classical, relativistic, and custom synthetic systems.
+Each function represents a specific physical system with its corresponding equations of motion.
+"""
+
 import torch
 from torch.autograd import Variable
 
 # classical (1D harmonic oscillator)
 def _classical(n, d, omega=1.):
+    """
+    Generate data for a classical harmonic oscillator system.
+    
+    Args:
+        n (int): Number of data points to generate
+        d (int): Dimension of the problem
+        omega (float): Angular frequency of the oscillator
+        
+    Returns:
+        tuple: (X, Y) where X contains input states and Y contains derivatives
+    """
     canonical = torch.rand(n, 2*d) * 2 - 1 # uniform sampling, ensures more even coverage of phase space (better for plotting)
     X = canonical
     Y = torch.zeros_like(X)
@@ -282,8 +301,8 @@ def _synthetic_exp(n, d):
     # -------------------------------------------------------------
     # For consistency with the structure in _synthetic_sin2, we define:
     #
-    #   Syy = d(...)    (by analogy, used as a “denominator” term)
-    #   Sx  = d(...)    (by analogy, used as a “numerator” term)
+    #   Syy = d(...)    (by analogy, used as a "denominator" term)
+    #   Sx  = d(...)    (by analogy, used as a "numerator" term)
     #   Sxy = d(...)    (also used in the numerator)
     #
     # then do: Y[:, d:] = (Sx - Sxy * y) / Syy
@@ -304,7 +323,7 @@ def _synthetic_exp(n, d):
     Sx  = 2.0 * x * torch.exp(x**2 + y**2)
     Sxy = 4.0 * x * y * torch.exp(x**2 + y**2)
 
-    # Fill Y’s second half
+    # Fill Y's second half
     Y[:, d:] = (Sx - Sxy * y) / Syy
 
     # Make these Variables that require grad (if you need autograd later)
@@ -314,10 +333,27 @@ def _synthetic_exp(n, d):
     return X, Y
     
 def generate_data(n, d, ts, device=None, n_synthetic=2, coeffs=None, rand_omega=False):
+    """
+    Generate training data from a combination of physical systems.
+    
+    This function creates training data from a mix of predefined physical systems
+    and optional synthetic systems. It allows specifying the number of systems,
+    dimensions, and custom coefficients for synthetic systems.
+    
+    Args:
+        n (int): Number of data points to generate per system
+        d (int): Dimension of the problem
+        ts (int): Total number of systems to use
+        device (torch.device, optional): Device to place the tensors on (CPU or GPU)
+        n_synthetic (int, optional): Number of synthetic systems to include
+        coeffs (list, optional): List of coefficient lists for synthetic systems
+        rand_omega (bool, optional): Whether to randomize the frequency parameter
+        
+    Returns:
+        tuple: (Xs, Ys) where Xs is a list of input states and Ys is a list of derivatives,
+        one pair per physical system
+    """
     ts = ts - n_synthetic
-    funcs = [ _classical, _relativistic, _pendulum, _kepler, _cosh, _relativistic_cosh,\
-             _morse, _relativistic_morse, _quartic, _relativistic_quartic, _kepler]
-    # funcs = [_relativistic, _classical]
     funcs = [_classical, _pendulum, _kepler, _relativistic, _synthetic_sin, _synthetic_sin2, _synthetic_exp]
     Xs = []
     Ys = []

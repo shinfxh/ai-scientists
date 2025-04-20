@@ -62,7 +62,7 @@ def reg(model, i, l, dl, activations):
     activation = last_weights * model.vectors
     activations[i] = activation.detach().cpu().numpy()
     reg_last = torch.norm(activation, p=1)/172 * l
-    
+
     # Add additional regularization for last weights
     reg_last += torch.norm(last_weights, p=1)/172 * l * 10
     
@@ -87,13 +87,13 @@ def loss_fn(model, inputs, labels, i, d, train=True, threshold=1e1):
     Returns:
         torch.Tensor: The computed loss value
     """
-    pred = model.predict(inputs, i, train=train, threshold=threshold)  
+    pred = model.predict(inputs, i, train=train, threshold=threshold)
     loss_qtt = torch.norm(pred[:, d:]-labels[:, d:], p=2)
     loss_sum = (loss_qtt) / torch.sqrt(torch.tensor(inputs.shape[0], dtype=torch.float)) 
     return loss_sum
 
 
-def eval_fn(model, Xs, Ys, total_systems, d):
+def eval_fn(model, Xs, Ys, d):
     """
     Evaluate the model on test data.
     
@@ -101,21 +101,21 @@ def eval_fn(model, Xs, Ys, total_systems, d):
         model: The neural network model
         Xs: List of input data tensors for each system
         Ys: List of ground truth tensors for each system
-        total_systems: Total number of systems to evaluate
         d: Dimension of the problem
     
     Returns:
         torch.Tensor: Maximum loss across all systems
     """
     model.eval()
+    ts = len(Xs)
     max_loss = -1e99
-    for i in range(total_systems):
+    for i in range(ts):
         X = Xs[i]
         Y = Ys[i]
         loss = loss_fn(model, X, Y, i, d, train=False, threshold=1e1)
         max_loss = max(max_loss, loss)
     return max_loss
-        
+
 
 def train_loop(start_epoch, end_epoch, loss_arr, ema_loss_arr, total_systems, dnn, model_ema, 
                optimizer, scheduler, Xs, Ys, Xs_test, Ys_test, n_train, batch_size, d, l, dl, 
@@ -165,14 +165,8 @@ def train_loop(start_epoch, end_epoch, loss_arr, ema_loss_arr, total_systems, dn
             choices = np.random.choice(n_train, batch_size, replace=False)
             inputs = X[choices]
             labels = Y[choices]
-            loss += loss_fn(dnn, inputs, labels, i, d) 
+            loss += loss_fn(dnn, inputs, labels, i, d)
             reg_last_i, reg_b_i = reg(dnn, i, l, dl, activations) # run this after the forward pass
-
-            # Normalize by total number of systems
-            loss = loss / total_systems
-            reg_last_i = reg_last_i / total_systems
-            reg_b_i = reg_b_i / total_systems
-
             loss += reg_last_i + reg_b_i
             reg_last += reg_last_i
             reg_b += reg_b_i
@@ -196,12 +190,12 @@ def train_loop(start_epoch, end_epoch, loss_arr, ema_loss_arr, total_systems, dn
         
         if epoch % epoch_per_eval == 0 or epoch == 1:
             # Do evaluation
-            eval_loss = eval_fn(dnn, Xs_test, Ys_test, total_systems, d)
+            eval_loss = eval_fn(dnn, Xs_test, Ys_test, d)
             curr_max_loss = np.max(loss_arr[-window:])
             print('Epoch {}: Train Loss = {}, Eval Loss = {}, Runtime = {:.2f}s, Reg_b: {}, Reg_last: {}'\
                   .format(epoch, np.mean(loss_arr[-100:]), eval_loss, time.time() - start_time, 
-                          np.max(reg_dict['b'][-window:]), np.max(reg_dict['weights'][-window:])))
-            ema_loss = eval_fn(model_ema.module, Xs_test, Ys_test, total_systems, d)
+                         np.max(reg_dict['b'][-window:]), np.max(reg_dict['weights'][-window:])))
+            ema_loss = eval_fn(model_ema.module, Xs_test, Ys_test, d)
             ema_loss_arr = np.append(ema_loss_arr, ema_loss.item())
             print('EMA eval loss: {}'.format(ema_loss))
             start_time = time.time()
@@ -236,6 +230,7 @@ def main(args):
     # Training parameters
     epochs_1 = args.epochs_1
     epochs_2 = args.epochs_2
+    epochs_3 = args.epochs_3
     n_train = args.n_train
     
     # Define synthetic coefficients if using synthetic data
@@ -243,9 +238,9 @@ def main(args):
     
     # Generate data
     Xs, Ys = generate_data(n_train, d, args.total_systems, device=device, 
-                           n_synthetic=args.n_synthetic, coeffs=coeffs)
+                          n_synthetic=args.n_synthetic, coeffs=coeffs)
     Xs_test, Ys_test = generate_data(args.n_test, d, args.total_systems, 
-                                     device=device, n_synthetic=args.n_synthetic, coeffs=coeffs)
+                                    device=device, n_synthetic=args.n_synthetic, coeffs=coeffs)
     
     batch_size = args.batch_size
     l = args.l1_weight
@@ -274,47 +269,27 @@ def main(args):
     epoch_per_eval = args.epoch_per_eval
     activations = [[] for _ in range(args.total_systems)]
 
-    scheduler = None
-    start_epoch = 0
-    end_epoch = 0
+    # First optimizer with linear warmup
+    optimizer = optim.AdamW(dnn.parameters(), lr=args.lr, weight_decay=args.weight_decay, 
+                          betas=(args.beta1, args.beta2))
+    scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=epochs_1)
+    start_epoch = 1
+    end_epoch = epochs_1
+    loss_arr, ema_loss_arr = train_loop(start_epoch, end_epoch, loss_arr, ema_loss_arr, args.total_systems,
+                                      dnn, model_ema, optimizer, scheduler, Xs, Ys, Xs_test, Ys_test,
+                                      n_train, batch_size, d, l, dl, reg_dict, activations, 
+                                      epoch_per_eval, window, save_dir)
 
-    # Training loop - iteratively increasing the number of systems
-    for t_curr in range(1, args.total_systems+1, 1):
-        # First optimizer with linear warmup
-        optimizer = optim.AdamW(dnn.parameters(), lr=args.lr, weight_decay=args.weight_decay, 
-                               betas=(args.beta1, args.beta2))
-        scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=epochs_1)
-        start_epoch = end_epoch + 1
-        end_epoch += epochs_1
-        loss_arr, ema_loss_arr = train_loop(start_epoch, end_epoch, loss_arr, ema_loss_arr, t_curr,
-                                          dnn, model_ema, optimizer, scheduler, Xs, Ys, Xs_test, Ys_test,
-                                          n_train, batch_size, d, l, dl, reg_dict, activations, 
-                                          epoch_per_eval, window, save_dir)
-        
-        # Second optimizer with cosine annealing
-        optimizer = optim.AdamW(dnn.parameters(), lr=args.lr, weight_decay=args.weight_decay, 
-                               betas=(args.beta1, args.beta2))
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_2)
-        start_epoch = end_epoch + 1
-        end_epoch += epochs_2
-        loss_arr, ema_loss_arr = train_loop(start_epoch, end_epoch, loss_arr, ema_loss_arr, t_curr,
-                                          dnn, model_ema, optimizer, scheduler, Xs, Ys, Xs_test, Ys_test,
-                                          n_train, batch_size, d, l, dl, reg_dict, activations, 
-                                          epoch_per_eval, window, save_dir)
-
-        # Save activations for current system
-        for i, act_i in enumerate(activations):
-            act_df = pd.DataFrame(act_i)
-            this_save_path = os.path.join(save_dir, f'system_{t_curr}_activations_{i}.csv')
-            act_df.to_csv(this_save_path, index=False)
-            
-        # Save model weights
-        model_path = os.path.join(pt_dir, f'model_{t_curr}.pt')
-        torch.save(dnn.state_dict(), model_path)
-        
-        # Save EMA model weights
-        ema_model_path = os.path.join(pt_dir, f'ema_model_{t_curr}.pt')
-        torch.save(model_ema.module.state_dict(), ema_model_path)
+    # Second optimizer with cosine annealing
+    optimizer = optim.AdamW(dnn.parameters(), lr=args.lr, weight_decay=args.weight_decay, 
+                          betas=(args.beta1, args.beta2))
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_2)
+    start_epoch = end_epoch + 1
+    end_epoch = epochs_1 + epochs_2
+    loss_arr, ema_loss_arr = train_loop(start_epoch, end_epoch, loss_arr, ema_loss_arr, args.total_systems,
+                                      dnn, model_ema, optimizer, scheduler, Xs, Ys, Xs_test, Ys_test,
+                                      n_train, batch_size, d, l, dl, reg_dict, activations, 
+                                      epoch_per_eval, window, save_dir)
 
     # Final Evaluation
     model = model_ema.module
@@ -340,9 +315,9 @@ def main(args):
     pd.DataFrame(ema_loss_arr).to_csv(os.path.join(save_dir, 'ema_loss.csv'), index=False)
 
     # Save final activations
-    for i, act_i in enumerate(activations):
+    for idx, act_i in enumerate(activations):
         act_df = pd.DataFrame(act_i)
-        final_act_path = os.path.join(save_dir, f'final_activations_{i}.csv')
+        final_act_path = os.path.join(save_dir, f'final_activations_{idx}.csv')
         act_df.to_csv(final_act_path, index=False)
 
     # Save final model weights
@@ -356,7 +331,7 @@ def main(args):
 
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Training script with continued learning of physics systems')
+    parser = argparse.ArgumentParser(description='Training script for physics systems')
     
     # Model parameters
     parser.add_argument('--width', type=int, default=20, help='Width of the neural network')
@@ -368,7 +343,8 @@ if __name__ == "__main__":
     parser.add_argument('--total_systems', type=int, default=4, help='Total number of systems to use')
     parser.add_argument('--n_synthetic', type=int, default=0, help='Number of synthetic systems')
     parser.add_argument('--epochs_1', type=int, default=100, help='Number of warmup epochs')
-    parser.add_argument('--epochs_2', type=int, default=10000, help='Number of main training epochs')
+    parser.add_argument('--epochs_2', type=int, default=50000, help='Number of main training epochs')
+    parser.add_argument('--epochs_3', type=int, default=100, help='Number of fine-tuning epochs')
     parser.add_argument('--n_train', type=int, default=10000, help='Number of training examples')
     parser.add_argument('--n_test', type=int, default=10000, help='Number of test examples')
     parser.add_argument('--batch_size', type=int, default=512, help='Batch size for training')
@@ -389,7 +365,7 @@ if __name__ == "__main__":
                         help='Directory to save weights')
     parser.add_argument('--pt_dir', type=str, default='/home/gridsan/xfu/ai_scientists/pt', 
                         help='Directory to save PyTorch models')
-    parser.add_argument('--run_name', type=str, default='1501a', help='Name of the run')
+    parser.add_argument('--run_name', type=str, default='2912g', help='Name of the run')
     
     args = parser.parse_args()
     
